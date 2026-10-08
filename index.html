@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCF Valuation Tool – M&A</title>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#E6ECF0; --paper:#F7F9FA; --ink:#1B2A3A; --muted:#5F6F7E;
+    --rule:#C7D1D9; --green:#2F6B4F; --red:#9B3B32;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Libre Franklin",system-ui,sans-serif;line-height:1.5;
+    font-variant-numeric:tabular-nums}
+  main{max-width:980px;margin:0 auto;padding:40px 20px 60px}
+  header h1{font-size:1.1rem;font-weight:600;margin:0;color:var(--muted)}
+  .value{font-size:clamp(2.6rem,8vw,4.6rem);font-weight:800;margin:4px 0 0;letter-spacing:-.02em}
+  .sub{color:var(--muted);margin:0 0 32px}
+  .grid{display:grid;grid-template-columns:300px 1fr;gap:28px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  form{background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:20px}
+  label{display:block;font-size:.9rem;margin:0 0 14px}
+  input{width:100%;margin-top:4px;padding:8px 10px;font:inherit;border:1px solid var(--rule);
+    border-radius:4px;background:#fff;color:var(--ink)}
+  input:focus{outline:2px solid var(--green);outline-offset:1px}
+  section h2{font-size:1rem;margin:0 0 10px}
+  table{width:100%;border-collapse:collapse;font-size:.92rem;margin-bottom:28px}
+  th,td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--rule)}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:600}
+  .total td{font-weight:800;border-top:2px solid var(--ink)}
+  .sens td.base{background:var(--green);color:#fff;font-weight:600}
+  .note{font-size:.85rem;color:var(--muted)}
+  .error{color:var(--red);font-weight:600}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Equity value per share</h1>
+    <p class="value" id="price">–</p>
+    <p class="sub" id="summary"></p>
+  </header>
+
+  <div class="grid">
+    <form id="inputs">
+      <label>Current free cash flow (€m)<input type="number" id="fcf" value="100" step="any"></label>
+      <label>FCF growth, years 1–5 (%)<input type="number" id="growth" value="8" step="any"></label>
+      <label>Discount rate / WACC (%)<input type="number" id="wacc" value="9" step="any"></label>
+      <label>Terminal growth rate (%)<input type="number" id="tg" value="2" step="any"></label>
+      <label>Net debt (€m)<input type="number" id="debt" value="300" step="any"></label>
+      <label>Shares outstanding (m)<input type="number" id="shares" value="50" step="any"></label>
+    </form>
+
+    <div>
+      <section>
+        <h2>Five-year cash flow forecast</h2>
+        <table id="forecast"></table>
+      </section>
+      <section>
+        <h2>Enterprise value to equity value</h2>
+        <table id="bridge"></table>
+      </section>
+      <section>
+        <h2>Price per share sensitivity (WACC vs terminal growth)</h2>
+        <table class="sens" id="sens"></table>
+        <p class="note">The highlighted cell is your base case. Small changes in WACC or terminal growth move the price a lot, which is why buyers and sellers negotiate these assumptions.</p>
+      </section>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString("en-US", {maximumFractionDigits: 1});
+const eur = n => "€" + n.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+// Core DCF model: returns every intermediate number so we can display it
+function dcf({fcf, growth, wacc, tg, debt, shares}) {
+  const rows = [];
+  let cash = fcf, pvSum = 0;
+  for (let year = 1; year <= 5; year++) {
+    cash = cash * (1 + growth);
+    const factor = 1 / Math.pow(1 + wacc, year);
+    rows.push({year, cash, factor, pv: cash * factor});
+    pvSum += cash * factor;
+  }
+  // Gordon growth terminal value at end of year 5, discounted back to today
+  const tv = cash * (1 + tg) / (wacc - tg);
+  const pvTv = tv / Math.pow(1 + wacc, 5);
+  const ev = pvSum + pvTv;
+  const equity = ev - debt;
+  return {rows, pvSum, tv, pvTv, ev, equity, price: equity / shares};
+}
+
+function read() {
+  const v = id => parseFloat($(id).value);
+  return {fcf: v("fcf"), growth: v("growth")/100, wacc: v("wacc")/100,
+          tg: v("tg")/100, debt: v("debt"), shares: v("shares")};
+}
+
+function render() {
+  const p = read();
+  if (Object.values(p).some(isNaN) || p.shares <= 0 || p.wacc <= p.tg) {
+    $("price").textContent = "–";
+    $("summary").innerHTML = '<span class="error">WACC must be higher than terminal growth, and shares must be above zero.</span>';
+    return;
+  }
+  const r = dcf(p);
+  $("price").textContent = eur(r.price);
+  $("summary").textContent = `Enterprise value €${fmt(r.ev)}m, equity value €${fmt(r.equity)}m. Terminal value is ${Math.round(r.pvTv / r.ev * 100)}% of enterprise value.`;
+
+  $("forecast").innerHTML =
+    "<tr><th>Year</th><th>FCF (€m)</th><th>Discount factor</th><th>Present value (€m)</th></tr>" +
+    r.rows.map(x => `<tr><td>${x.year}</td><td>${fmt(x.cash)}</td><td>${x.factor.toFixed(3)}</td><td>${fmt(x.pv)}</td></tr>`).join("");
+
+  $("bridge").innerHTML = `
+    <tr><td>PV of forecast cash flows</td><td>${fmt(r.pvSum)}</td></tr>
+    <tr><td>PV of terminal value</td><td>${fmt(r.pvTv)}</td></tr>
+    <tr class="total"><td>Enterprise value</td><td>${fmt(r.ev)}</td></tr>
+    <tr><td>Less net debt</td><td>(${fmt(p.debt)})</td></tr>
+    <tr class="total"><td>Equity value</td><td>${fmt(r.equity)}</td></tr>`;
+
+  // Sensitivity grid: WACC ±1% and terminal growth ±1% around the base case
+  const steps = [-0.01, -0.005, 0, 0.005, 0.01];
+  let html = "<tr><th>WACC \\ g</th>" + steps.map(s => `<th>${((p.tg+s)*100).toFixed(1)}%</th>`).join("") + "</tr>";
+  for (const w of steps) {
+    html += `<tr><td><b>${((p.wacc+w)*100).toFixed(1)}%</b></td>`;
+    for (const g of steps) {
+      const wacc = p.wacc + w, tg = p.tg + g;
+      const cell = wacc > tg ? eur(dcf({...p, wacc, tg}).price) : "n/a";
+      html += `<td class="${w === 0 && g === 0 ? "base" : ""}">${cell}</td>`;
+    }
+    html += "</tr>";
+  }
+  $("sens").innerHTML = html;
+}
+
+$("inputs").addEventListener("input", render);
+render();
+</script>
+</body>
+</html>
